@@ -17,15 +17,31 @@ import lsi.ubu.util.exceptions.SGBDError;
 import lsi.ubu.util.exceptions.oracle.OracleSGBDErrorUtil;
 import lsi.ubu.Misc;
 
-public class ServicioImpl implements Servicio {
-	private static final Logger LOGGER = LoggerFactory.getLogger(ServicioImpl.class);
+/**
+ * ServicioImpl: implementa la función alquilar que permite realizar la reserva de un alquiler, incluyendo la factura y las líneas de factura correspondientes.
+ * @author <a href="mailto:dbr1006@alu.ubu.es">Daniel Bedoya</a>
+ * @author <a href="mailto:dsd1008@alu.ubu.es">David Santaolalla</a>
+ * @author <a href="mailto:mdu1001@alu.ubu.es">Miguel de Juan</a>
+ * @version 1.0
+ * @since 1.0
+ */
 
+public class ServicioImpl implements Servicio {
+	// Declaramos logger para conocer posibles errores
+	private static final Logger LOGGER = LoggerFactory.getLogger(ServicioImpl.class);
+	
+	// En caso de no estar indicada la fecha final del alquiler, se utilizaŕá por defecto un alquiler de 4 días.
 	private static final int DIAS_DE_ALQUILER = 4;
 
+	// La función alquilar recibe como parámetros el cliente, la matrícula del vehículo a alquilar y los días de alquiler.
+	// Realizará las comprobaciones necesarias y, si todo está bien, insertará una nueva reserva y una nueva factura, incluyendo
+	// líneas de detalle, en la base de datos.
 	public void alquilar(String nifCliente, String matricula, Date fechaIni, Date fechaFin) throws SQLException {
+		// Declaramos variables necesarias para manejo de BBDD en JDBC
 		PoolDeConexiones pool = PoolDeConexiones.getInstance();
 
 		Connection con = null;
+		// Utilizaremos solo una variable de PreparedStatement y ResultSet, las iremos actualizando 
 		PreparedStatement st = null;
 		ResultSet rs = null;
 
@@ -41,12 +57,24 @@ public class ServicioImpl implements Servicio {
 				throw new AlquilerCochesException(AlquilerCochesException.SIN_DIAS);
 			}
 		}
-		else fechaFinAlq = Misc.addDays(fechaIni, DIAS_DE_ALQUILER);
+		else fechaFinAlq = Misc.addDays(fechaIni, DIAS_DE_ALQUILER); // Si no se indica fecha final, se suman 4 días a la inicial.
 
 		try {
 			con = pool.getConnection();
 
-			// Utilizamos programación defensiva para cada caso
+			/* Utilizamos programación defensiva para cada caso
+			* Para pasar todos los tests tal y como están, es importante que la comprobación 
+			* del vehículo vaya antes que la del cliente, ya que, en el caso del test de vehículo inexistente,
+			* el cliente también es inexistente.
+			* Si no existe la matrícula del vehículo en la base de datos, lanzamos excepción
+			*/
+			st = con.prepareStatement("SELECT id_modelo FROM vehiculos WHERE matricula = ?");
+			st.setString(1, matricula); 
+			rs = st.executeQuery();
+			if (!rs.next()) throw new AlquilerCochesException(AlquilerCochesException.VEHICULO_NO_EXIST);
+			st.close();
+			rs.close();
+			
 			// Si no existe el NIF del cliente en la base de datos, lanzamos excepción
 			st = con.prepareStatement("SELECT NIF FROM clientes WHERE NIF = ?");
 			st.setString(1, nifCliente);
@@ -55,17 +83,10 @@ public class ServicioImpl implements Servicio {
 			st.close();
 			rs.close();
 			
-			// Si no existe la matrícula del vehículo en la base de datos, lanzamos excepción
-			st = con.prepareStatement("SELECT id_modelo FROM vehiculos WHERE matricula = ?");
-			st.setString(1, matricula); 
-			rs = st.executeQuery();
-			if (!rs.next()) throw new AlquilerCochesException(AlquilerCochesException.VEHICULO_NO_EXIST);
-			st.close();
-			rs.close();
-			
-			// Verificar que el vehículo no está ocupado en las fechas solicitadas.
-			// Es un cálculo complejo, bastante más que el que se había planteado inicialmente (realmente no estaba definido, solo era para tener la estructura)
-			// Debemos validar que no se cumple ninguna de estas 3 condiciones para confirmar que no hay ningún alquiler para ese vehículo en las fechas solicitadas
+			/* Verificar que el vehículo no está ocupado en las fechas solicitadas.
+			* Es un cálculo complejo, bastante más que el que se había planteado inicialmente (realmente no estaba definido, solo era para tener la estructura)
+			* Debemos validar que no se cumple ninguna de estas 3 condiciones para confirmar que no hay ningún alquiler para ese vehículo en las fechas solicitadas
+			*/
 			st = con.prepareStatement(
 					"SELECT matricula FROM reservas WHERE matricula = ? AND " + 
 					"((fecha_ini <= ? AND fecha_fin >= ?) OR " + // Condición 1: la fecha de inicio del alquiler no está dentro del plazo de una reserva
