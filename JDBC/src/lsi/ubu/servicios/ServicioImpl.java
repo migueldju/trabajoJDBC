@@ -15,6 +15,7 @@ import lsi.ubu.excepciones.AlquilerCochesException;
 import lsi.ubu.util.PoolDeConexiones;
 import lsi.ubu.util.exceptions.SGBDError;
 import lsi.ubu.util.exceptions.oracle.OracleSGBDErrorUtil;
+import lsi.ubu.Misc;
 
 public class ServicioImpl implements Servicio {
 	private static final Logger LOGGER = LoggerFactory.getLogger(ServicioImpl.class);
@@ -32,6 +33,7 @@ public class ServicioImpl implements Servicio {
 		 * El calculo de los dias se da hecho
 		 */
 		long diasDiff = DIAS_DE_ALQUILER;
+		Date fechaFinAlq = new java.util.Date();
 		if (fechaFin != null) {
 			diasDiff = TimeUnit.MILLISECONDS.toDays(fechaFin.getTime() - fechaIni.getTime());
 
@@ -39,67 +41,71 @@ public class ServicioImpl implements Servicio {
 				throw new AlquilerCochesException(AlquilerCochesException.SIN_DIAS);
 			}
 		}
+		else fechaFinAlq = Misc.addDays(fechaIni, DIAS_DE_ALQUILER);
 
 		try {
 			con = pool.getConnection();
 
-			/* A completar por el alumnado... */
-
-			/* ================================= AYUDA R PIDA ===========================*/
-			/*
-			 * Algunas de las columnas utilizan tipo numeric en SQL, lo que se traduce en
-			 * BigDecimal para Java.
-			 * 
-			 * Convertir un entero en BigDecimal: new BigDecimal(diasDiff)
-			 * 
-			 * Sumar 2 BigDecimals: usar metodo "add" de la clase BigDecimal
-			 * 
-			 * Multiplicar 2 BigDecimals: usar metodo "multiply" de la clase BigDecimal
-			 *
-			 * 
-			 * Paso de util.Date a sql.Date java.sql.Date sqlFechaIni = new
-			 * java.sql.Date(sqlFechaIni.getTime());
-			 *
-			 *
-			 * Recuerda que hay casos donde la fecha fin es nula, por lo que se debe de
-			 * calcular sumando los dias de alquiler (ver variable DIAS_DE_ALQUILER) a la
-			 * fecha ini.
-			 */
-			
 			// Utilizamos programación defensiva para cada caso
 			// Si no existe el NIF del cliente en la base de datos, lanzamos excepción
-			st = con.prepareStatement("SELECT NIF from clientes WHERE NIF = ?");
-			st.setString(0, nifCliente);
+			st = con.prepareStatement("SELECT NIF FROM clientes WHERE NIF = ?");
+			st.setString(1, nifCliente);
 			rs = st.executeQuery();
 			if (!rs.next()) throw new AlquilerCochesException(AlquilerCochesException.CLIENTE_NO_EXIST);
 			st.close();
 			rs.close();
 			
 			// Si no existe la matrícula del vehículo en la base de datos, lanzamos excepción
-			st = con.prepareStatement("SELECT matricula from vehiculos WHERE matricula = ?");
-			st.setString(0, matricula);
+			st = con.prepareStatement("SELECT id_modelo FROM vehiculos WHERE matricula = ?");
+			st.setString(1, matricula); 
 			rs = st.executeQuery();
 			if (!rs.next()) throw new AlquilerCochesException(AlquilerCochesException.VEHICULO_NO_EXIST);
 			st.close();
 			rs.close();
 			
-			// Si hay una reserva para el vehículo con la matŕicula correspondiente, lanzamos excepción (falta comprobar esto correctamente)
-			st = con.prepareStatement("SELECT matricula from reservas WHERE matricula = ? AND fecha_fin > ?");
-			st.setString(0, matricula);
-			st.setDate(1, new java.sql.Date(fechaIni.getTime()));
+			// Verificar que el vehículo no está ocupado en las fechas solicitadas.
+			// Es un cálculo complejo, bastante más que el que se había planteado inicialmente (realmente no estaba definido, solo era para tener la estructura)
+			// Debemos validar que no se cumple ninguna de estas 3 condiciones para confirmar que no hay ningún alquiler para ese vehículo en las fechas solicitadas
+			st = con.prepareStatement(
+					"SELECT matricula FROM reservas WHERE matricula = ? AND " + 
+					"((fecha_ini <= ? AND fecha_fin >= ?) OR " + // Condición 1: la fecha de inicio del alquiler no está dentro del plazo de una reserva
+					"(fecha_ini <= ? AND fecha_fin >= ?) OR " + // Condición 2: la fecha de fin no está dentro del plazo de una reserva
+					"(fecha_ini >= ? AND fecha_fin <= ?))"); // Condición 3: las fechas no están ya reservadas
+			
+			st.setString(1, matricula);
+			// Condición 1 - La fecha de inicio del alquiler no puede ser mayor que la fecha de inicio y menor que la de fin de otra reserva
+			// No puede empezar más tarde de lo que empieza otra si se supone que acaba antes.
+			st.setDate(2, new java.sql.Date(fechaIni.getTime()));
+			st.setDate(3, new java.sql.Date(fechaIni.getTime()));
+			// Condición 2 - La fecha de final del alquiler no puede ser mayor que la fecha de inicio y menor que la de fin de otra reserva (mismo caso que 1)
+			// No puede acabar más tarde de lo que empieza otra si se supone que acaba antes.
+			st.setDate(4, new java.sql.Date(fechaFinAlq.getTime()));
+			st.setDate(5, new java.sql.Date(fechaFinAlq.getTime()));
+			// Condición 3 - La fecha de inicio del alquiler no puede ser menor que la de inicio si a su vez, la final es mayor que la de fin de otra reserva.
+			// En este caso, la fecha de inicio de la otra reserva estaría dentro del plazo de la reserva a añadir.
+			st.setDate(6, new java.sql.Date(fechaIni.getTime()));
+			st.setDate(7, new java.sql.Date(fechaFinAlq.getTime()));
+			
+			// Si hay algún caso que cumpla alguna de las 3 condiciones, lanzamos excepción
 			rs = st.executeQuery();
 			if (rs.next()) throw new AlquilerCochesException(AlquilerCochesException.VEHICULO_OCUPADO);
 			st.close();
 			rs.close();
 			
-			// Insertamos nueva reserva (falta evaluar caso en caso de que fechaFin sea null)
-			st = con.prepareStatement("INSERT into reservas (idReserva, cliente, matricula, fecha_ini, fecha_fin) VALUES (idReserva.nextval, ?, ?, ?, ?)");
-			st.setString(0, nifCliente);
-			st.setString(1, matricula);
-			st.setDate(2, new java.sql.Date(fechaIni.getTime()));
-			st.setDate(3, new java.sql.Date(fechaFin.getTime()));
+			// Insertamos nueva reserva (manejamos correctamente el caso de fechaFin nula)
+			st = con.prepareStatement("INSERT into reservas (idReserva, cliente, matricula, fecha_ini, fecha_fin) VALUES (seq_reservas.nextval, ?, ?, ?, ?)");
+			st.setString(1, nifCliente); // Corregido: índice 1 en lugar de 0
+			st.setString(2, matricula); // Corregido: índice 2 en lugar de 1
+			st.setDate(3, new java.sql.Date(fechaIni.getTime())); // Corregido: índice 3 en lugar de 2
+			
+			// Si fechaFin es null, establecemos el parámetro como NULL
+			if (fechaFin != null) {
+				st.setDate(4, new java.sql.Date(fechaFin.getTime())); // Corregido: índice 4 en lugar de 3
+			} else {
+				st.setNull(4, java.sql.Types.DATE);
+			}
+			
 			st.executeUpdate();
-			con.commit();
 			
 			// Obtenemos datos del vehículo para generar factura
 			st = con.prepareStatement(
@@ -168,6 +174,7 @@ public class ServicioImpl implements Servicio {
 				LOGGER.debug(e.getMessage());
 				throw e;
 			}
+            throw e;
 
 		} finally {
 			if(st!= null) st.close();
