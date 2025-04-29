@@ -1,5 +1,6 @@
 package lsi.ubu.servicios;
 
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -64,6 +65,9 @@ public class ServicioImpl implements Servicio {
 			 * calcular sumando los dias de alquiler (ver variable DIAS_DE_ALQUILER) a la
 			 * fecha ini.
 			 */
+			
+			// Utilizamos programación defensiva para cada caso
+			// Si no existe el NIF del cliente en la base de datos, lanzamos excepción
 			st = con.prepareStatement("SELECT NIF from clientes WHERE NIF = ?");
 			st.setString(0, nifCliente);
 			rs = st.executeQuery();
@@ -71,6 +75,7 @@ public class ServicioImpl implements Servicio {
 			st.close();
 			rs.close();
 			
+			// Si no existe la matrícula del vehículo en la base de datos, lanzamos excepción
 			st = con.prepareStatement("SELECT matricula from vehiculos WHERE matricula = ?");
 			st.setString(0, matricula);
 			rs = st.executeQuery();
@@ -78,20 +83,81 @@ public class ServicioImpl implements Servicio {
 			st.close();
 			rs.close();
 			
+			// Si hay una reserva para el vehículo con la matŕicula correspondiente, lanzamos excepción (falta comprobar esto correctamente)
 			st = con.prepareStatement("SELECT matricula from reservas WHERE matricula = ? AND fecha_fin > ?");
 			st.setString(0, matricula);
 			st.setDate(1, new java.sql.Date(fechaIni.getTime()));
 			rs = st.executeQuery();
-			if (!rs.next()) throw new AlquilerCochesException(AlquilerCochesException.VEHICULO_OCUPADO);
+			if (rs.next()) throw new AlquilerCochesException(AlquilerCochesException.VEHICULO_OCUPADO);
 			st.close();
 			rs.close();
 			
+			// Insertamos nueva reserva (falta evaluar caso en caso de que fechaFin sea null)
 			st = con.prepareStatement("INSERT into reservas (idReserva, cliente, matricula, fecha_ini, fecha_fin) VALUES (idReserva.nextval, ?, ?, ?, ?)");
 			st.setString(0, nifCliente);
 			st.setString(1, matricula);
 			st.setDate(2, new java.sql.Date(fechaIni.getTime()));
 			st.setDate(3, new java.sql.Date(fechaFin.getTime()));
 			st.executeUpdate();
+			con.commit();
+			
+			// Obtenemos datos del vehículo para generar factura
+			st = con.prepareStatement(
+					"SELECT m.precio_cada_dia, m.capacidad_deposito, m.tipo_combustible, pc.precio_por_litro, m.id_modelo " +
+					"FROM vehiculos v JOIN modelos m ON v.id_modelo = m.id_modelo " +
+					"JOIN precio_combustible pc ON m.tipo_combustible = pc.tipo_combustible " +
+					"WHERE v.matricula = ?");
+			st.setString(1, matricula);
+			rs = st.executeQuery();
+			
+			// Almacenamos precios de alquiler y combustible
+			if (rs.next()) {
+				BigDecimal precioDia = rs.getBigDecimal(1);
+				int capacidadDeposito = rs.getInt(2);
+				String tipoCombustible = rs.getString(3);
+				BigDecimal precioLitro = rs.getBigDecimal(4);
+				int idModelo = rs.getInt(5);
+				
+				// Realizamos cálculos utilizando las operaciones necesarias con bigDecimal
+				BigDecimal importeAlquiler = precioDia.multiply(new BigDecimal(diasDiff));
+				BigDecimal importeCombustible = precioLitro.multiply(new BigDecimal(capacidadDeposito));
+				BigDecimal importeTotal = importeAlquiler.add(importeCombustible);
+				
+				st = con.prepareStatement(
+						"INSERT INTO facturas (nroFactura, importe, cliente) " +
+						"VALUES (seq_num_fact.nextval, ?, ?)");
+				st.setBigDecimal(1, importeTotal);
+				st.setString(2, nifCliente);
+				st.executeUpdate();
+				st.close();
+				
+				// Obtenemos el número de factura generado para generar líneas
+				st = con.prepareStatement("SELECT seq_num_fact.currval FROM dual");
+				rs = st.executeQuery();
+				rs.next();
+				int nroFactura = rs.getInt(1);
+				rs.close();
+				st.close();
+				
+				// Añadimos línea de factura con coste alquiler
+				st = con.prepareStatement(
+						"INSERT INTO lineas_factura (nroFactura, concepto, importe) VALUES (?, ?, ?)");
+				st.setInt(1, nroFactura);
+				st.setString(2, diasDiff + " dias de alquiler, vehiculo modelo " + idModelo + "   ");
+				st.setBigDecimal(3, importeAlquiler);
+				st.executeUpdate();
+				st.close();
+				
+				// Añadimos línea de factura con coste combustible
+				st = con.prepareStatement(
+						"INSERT INTO lineas_factura (nroFactura, concepto, importe) VALUES (?, ?, ?)");
+				st.setInt(1, nroFactura);
+				st.setString(2, "Deposito lleno de " + capacidadDeposito + " litros de " + tipoCombustible + " ");
+				st.setBigDecimal(3, importeCombustible);
+				st.executeUpdate();
+			}
+			
+			// Confirmamos los cambios
 			con.commit();
 			
 
